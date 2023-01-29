@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Discord: resizable, high quality emojis
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  Enlarges and loads higher resolution versions of emojis on Discord
 // @author       Corrodias
 // @match        https://discord.com/*
@@ -14,12 +14,17 @@
 (async function() {
     'use strict';
 
-    const valid_emoji_sizes = [16, 32, 48, 64, 80, 96, 128]
+    const validEmojiSizes = [16, 32, 48, 64, 80, 96, 128]
 
     var newEmojiSize;
     var newPickerWidth;
     var newPickerHeight;
 
+    const defaultSettings = {
+        newEmojiSize: 64,
+        newPickerWidth: 1010,
+        newPickerHeight: 600
+    }
     let settings = {}
     try {
         settings = JSON.parse(await GM.getValue('settings'));
@@ -28,20 +33,21 @@
 
     const loadSettings = (settings) => {
         newEmojiSize = settings.newEmojiSize ? isFinite(settings.newEmojiSize) ? settings.newEmojiSize : parseInt(settings.newEmojiSize) : NaN;
-        if (isNaN(newEmojiSize)) newEmojiSize = 64;
-        newPickerWidth = settings.newPickerWidth ? isFinite(settings.newPickerWidth) ? settings.newPickerWidth :parseInt(settings.newPickerWidth) : NaN;
-        if (isNaN(newPickerWidth)) newPickerWidth = 1010;
-        newPickerHeight = settings.newPickerHeight ? isFinite(settings.newPickerHeight) ? settings.newPickerHeight :parseInt(settings.newPickerHeight) : NaN;
-        if (isNaN(newPickerHeight)) newPickerHeight = 600;
+        if (isNaN(newEmojiSize)) newEmojiSize = defaultSettings.newEmojiSize;
+        newPickerWidth = settings.newPickerWidth ? isFinite(settings.newPickerWidth) ? settings.newPickerWidth : parseInt(settings.newPickerWidth) : NaN;
+        if (isNaN(newPickerWidth)) newPickerWidth = defaultSettings.newPickerWidth;
+        newPickerHeight = settings.newPickerHeight ? isFinite(settings.newPickerHeight) ? settings.newPickerHeight : parseInt(settings.newPickerHeight) : NaN;
+        if (isNaN(newPickerHeight)) newPickerHeight = defaultSettings.newPickerHeight;
     }
     loadSettings(settings);
 
     let emojiRowWidth = newPickerWidth - 48 - 16; // category panel is 48 wide. there is a margin.
     let emojiCountPerRow = Math.floor(emojiRowWidth / (newEmojiSize + 8)); // each emoji button has an 8px margin.
-    // this is how many emojis we want to fit in the row. now, we must calculate the desired, original width of the panel so that the same number of 40px buttons fit.
-    let initialPanelWidth = (emojiCountPerRow * 40) + 48 + 16;
+    // this is how many emojis we want to fit in the row. now, calculate the desired width of the panel so that this number of 48px buttons fit (used to be 40px).
+    // this is because the grid layout code for the panel chooses how many buttons to put on each row based on its width, assuming original-sized buttons.
+    let initialPanelWidth = (emojiCountPerRow * 48) + 48 + 16;
     // Find the smallest, valid URL size we can get away with for the desired emoji size.
-    let emoji_url_size = valid_emoji_sizes.find(e => e >= newEmojiSize) ?? 128;
+    let emojiUrlSize = validEmojiSizes.find(e => e >= newEmojiSize) ?? 128;
 
     // .emojiItem-277VFM.emojiItemMedium-2stgkv is the reaction picker buttons
     // .emojiListRowMediumSize-2_-xbz is the grid
@@ -50,7 +56,7 @@
     // .emojiImage-1mTIfi is the inline picker when you type a colon
 
     var css = `
-.chatContent-a9vAAp .emoji, .chatContent-a9vAAp .emote, .chatContent-3KubbW .emoji, .chatContent-3KubbW .emote {
+main[class*="chatContent-"] .emoji, main[class*="chatContent-"] .emote {
     height: ${newEmojiSize}px !important;
     width: ${newEmojiSize}px !important;
     max-height: none !important;
@@ -58,107 +64,75 @@
     vertical-align: bottom;
 }
 
-.emojiPicker-3PwZFl, .emojiPicker-6YCk8a {
+div[class*="emojiPicker-"] {
     height: ${newPickerHeight}px;
-	width: ${initialPanelWidth}px;
+    width: ${initialPanelWidth}px;
 }
 
-.positionContainer-dMArNx {
-	height: ${newPickerHeight}px;
+section[class*="positionContainer-"] {
+    height: ${newPickerHeight}px;
 }
 
-.emojiItem-277VFM.emojiItemMedium-2stgkv {
-	height: ${newEmojiSize + 8}px;
-	width: ${newEmojiSize + 8}px;
+button[class*="emojiItemMedium-"] {
+    height: ${newEmojiSize + 8}px;
+    width: ${newEmojiSize + 8}px;
 }
 
-.emojiListRowMediumSize-2_-xbz {
-	height: ${newEmojiSize + 8}px;
-	grid-template-columns: repeat(auto-fill, ${newEmojiSize + 8}px);
+ul[class*="emojiListRowMediumSize-"] {
+    height: ${newEmojiSize + 8}px;
+    grid-template-columns: repeat(auto-fill, ${newEmojiSize + 8}px);
 }
 
-.emojiItemMedium-2stgkv .image-3tDi44 {
-	height: ${newEmojiSize}px !important;
-	width: ${newEmojiSize}px !important;
+button[class*="emojiItemMedium-"] img[class*="image-"] {
+    height: ${newEmojiSize}px !important;
+    width: ${newEmojiSize}px !important;
 }
 
-.emojiImage-1mTIfi {
+img[class*="emojiImage-"] {
     height: ${newEmojiSize}px !important;
     width: ${newEmojiSize}px !important;
 }
 `
 
-    const add_style = () => {
-        let element = document.createElement('style');
-        element.setAttribute('type', 'text/css');
-
-        if ('textContent' in element) {
-            element.textContent = css;
-        } else {
-            element.styleSheet.cssText = css;
-        }
-
-        document.head.appendChild(element);
-    }
-
-    add_style();
-
-    const mutation_observer = new MutationObserver(async mutation_records => {
-        for (const mutation_record of mutation_records) {
-            for (const node of mutation_record.addedNodes) {
+    const mutationObserverOnChatContent = new MutationObserver(async mutations => {
+        for (const mutation of mutations) {
+            for (const node of mutation.addedNodes) {
                 if (node.nodeType !== Node.ELEMENT_NODE) continue;
-                replace_all_image_sources(node);
-                add_url_change_observers(node);
-                resize_picker(node);
-                await add_settings_menu(node);
+                replaceAllImageSources(node);
+                resizeReactionPicker(node);
+                add_settings_menu(node);
             }
         }
     });
 
-    const resize_picker = (element) => {
+    const hasClassPrefix = (element, prefix) => {
+        for (let clazz of element.classList.values()) {
+            if (clazz.startsWith(prefix)) return true;
+        }
+        return false;
+    }
+
+    const resizeReactionPicker = (element) => {
         // let the CSS give it a default size calculated to insert the correct number of emojis per row.
         // then resize it after it's added, which does NOT alter the number of emojis per row.
 
         let panel = null;
-        if (element.classList.contains('emojiPicker-6YCk8a')) panel = element;
-        else panel = element.querySelector('.emojiPicker-6YCk8a');
+        if (hasClassPrefix(element, 'emojiPicker-')) panel = element;
+        else panel = element.querySelector('div[class*="emojiPicker-"]');
 
         if (panel === null) return;
-        if (panel.parentNode.classList.contains('emojiPickerInExpressionPicker-2nOwH8')) return; // for now, do not resize the chat picker, just the reaction picker.
+        if (hasClassPrefix(panel.parentNode, 'emojiPickerInExpressionPicker-')) return; // do not resize the chat picker, just the reaction picker.
 
         panel.style.width = newPickerWidth.toString() + 'px';
     }
 
-    var replace_image_regex = new RegExp(`size=${emoji_url_size}`, 'g');
-    const replace_image_source = (element) => {
-        // Make sure we don't get stuck in a replacing loop.
-        if (replace_image_regex.test(element.src)) return;
-        element.src = element.src.replace(/size=\d+/, `size=${emoji_url_size}`);
-    }
-
-    const replace_all_image_sources = (element) => {
-        element.querySelectorAll('img').forEach(image_element => {
+    const replaceAllImageSources = (element) => {
+        element.querySelectorAll('img').forEach(img => {
             // Only replace emojis.
-            if (!/^https:\/\/cdn.discordapp.com\/emojis\/.*?\?.*?size=\d+.*$/.test(image_element.src)) return;
-            replace_image_source(image_element);
-        });
-    };
-
-    const add_url_change_observers = (element) => {
-        element.querySelectorAll('img').forEach(image_element => {
-            // Only monitor emojis.
-            if (!/^https:\/\/cdn.discordapp.com\/emojis\/.*?\?.*?size=\d+.*$/.test(image_element.src)) return;
-            url_change_observer.observe(image_element, { attributes: true });
+            if (!/^https:\/\/cdn.discordapp.com\/emojis\/.*?\?.*?size=\d+.*$/.test(img.src)) return;
+            img.src = img.src.replace(/size=\d+/, `size=${emojiUrlSize}`);
         });
     }
-
-    const url_change_observer = new MutationObserver(mutation_records => {
-        for (const mutation_record of mutation_records) {
-            if (mutation_record.attributeName !== 'src') return;
-            let new_url = mutation_record.target.getAttribute('src');
-            replace_image_source(mutation_record.target);
-        }
-    });
 
     const add_settings_menu = async (element) => {
         // Only act on the settings menu.
@@ -215,6 +189,21 @@
     </div>
 </div>`;
 
+    const add_style = () => {
+        let element = document.createElement('style');
+        element.setAttribute('type', 'text/css');
+
+        if ('textContent' in element) {
+            element.textContent = css;
+        } else {
+            element.styleSheet.cssText = css;
+        }
+
+        document.head.appendChild(element);
+    }
+
+    add_style();
+
     // Monitor each HTML element that gets added to the HTML body element, since the page takes some time to load and dynamically add its content.
-    mutation_observer.observe(document.body, { childList: true, subtree: true });
+    mutationObserverOnChatContent.observe(document.body, { childList: true, subtree: true });
 })();
