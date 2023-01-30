@@ -27,7 +27,7 @@
 
     const validEmojiSizes = [16, 32, 48, 64, 80, 96, 128];
 
-    var emojiUrlSize = 48;
+    var emojiUrlSize = '48';
     var css = '';
 
     const defaultSettings = {
@@ -62,7 +62,7 @@
         // Here's where stuff gets persisted.
 
         // Find the smallest, valid URL size we can get away with for the desired emoji size.
-        emojiUrlSize = validEmojiSizes.find(e => e >= newEmojiSize) ?? 128;
+        emojiUrlSize = (validEmojiSizes.find(e => e >= newEmojiSize) ?? 128).toString();
 
         // .emojiItem-277VFM.emojiItemMedium-2stgkv is the reaction picker buttons
         // .emojiListRowMediumSize-2_-xbz is the grid
@@ -107,14 +107,26 @@ img[class*="emojiImage-"] {
     width: ${newEmojiSize}px !important;
 }
 `;
-        reload();
+
+        applyCss();
     }
 
+    const mutationObserver = new MutationObserver(async mutations => {
+        for (const mutation of mutations) {
+            processMutation(mutation);
+        }
+    });
+
     function processMutation(mutation) {
+        // deal with the webp/gif emojis, which swap URLs when discord gains/loses focus.
+        if (mutation.type === 'attributes' && mutation.target.tagName === 'IMG') {
+            replaceImageSource(mutation.target);
+        }
         for (const node of mutation.addedNodes) {
             if (node.nodeType !== Node.ELEMENT_NODE) continue;
             replaceAllImageSources(node);
             resizeReactionPicker(node);
+            if (shouldAddSettingsMenu) addSettingsMenu(node);
         }
     }
 
@@ -127,7 +139,7 @@ img[class*="emojiImage-"] {
         else panel = element.querySelector('div[class*="emojiPicker-"]');
 
         if (panel === null) return;
-        if (hasClassPrefix(panel.parentNode, 'emojiPickerInExpressionPicker-')) return; // do not resize the chat picker, just the reaction picker.
+        if (hasClassPrefix(panel.parentNode, 'emojiPickerInExpressionPicker-')) return; // only resize the reaction picker. the chat picker is more complex than this.
 
         panel.style.width = settings.newPickerWidth.toString() + 'px';
     }
@@ -140,11 +152,54 @@ img[class*="emojiImage-"] {
     }
 
     function replaceAllImageSources(element) {
-        element.querySelectorAll('img').forEach(img => {
-            // Only replace emojis.
-            if (!/^https:\/\/cdn.discordapp.com\/emojis\/.*?\?.*?size=\d+.*$/.test(img.src)) return;
-            img.src = img.src.replace(/size=\d+/, `size=${emojiUrlSize}`);
-        });
+        element.querySelectorAll('img').forEach(replaceImageSource);
+    }
+
+    const emojiRegex = /^(https:\/\/cdn.discordapp.com\/emojis\/.*?\?.*?size=)(\d+)(.*)$/;
+    function replaceImageSource(img) {
+        // Only replace emojis.
+        // This will recursively cause another mutation, so also only replace if the target size doesn't already match!
+        let match = img.src.match(emojiRegex);
+        if (match === null || match[2] === emojiUrlSize) return;
+        img.src = match[1] + emojiUrlSize + match[3];
+    }
+
+    function addSettingsMenu(element) {
+        // Only act on the settings menu.
+        let sideBar = element.querySelector('*[class*="side-"]');
+        if (sideBar === null) return;
+        // Find the last menu item in the App Settings section.
+        let appSettingsHeader = Array.from(sideBar.querySelectorAll('*[class*="header-"]')).find(e => e.textContent === 'App Settings');
+        let finalItem = appSettingsHeader.nextElementSibling;
+        while (hasClassPrefix(finalItem.nextElementSibling, 'item-')) {
+            finalItem = finalItem.nextElementSibling;
+        }
+        // Add a new menu item at the end.
+        let newItem = finalItem.cloneNode();
+        newItem.textContent = 'Resizable Emojis';
+        finalItem.after(newItem);
+
+        newItem.onclick = () => {
+            let dialog = document.body.appendChild(createSettingsPanel());
+            dialog.style.display = 'block';
+            dialog.style.position = 'fixed';
+            dialog.style.zIndex = '1000';
+            dialog.style.left = '0';
+            dialog.style.top = '0';
+            dialog.style.width = '100%';
+            dialog.style.height = '100%';
+            dialog.style.overflow = 'auto';
+            dialog.style.backgroundColor = 'rgba(0,0,0,0.4)';
+
+            dialog.querySelector('button[name="save"]').addEventListener('click',
+                () => {
+                    dialog.remove();
+                });
+            dialog.querySelector('button[name="cancel"]').addEventListener('click',
+                () => {
+                    dialog.remove();
+                });
+        };
     }
 
     function createSettingsPanel() {
@@ -165,7 +220,6 @@ img[class*="emojiImage-"] {
             let settings_text = div.querySelector('textarea').value;
             settings = await saveSettingsToStorage(settings_text);
             configure();
-            reload();
         };
 
         div.querySelector('button[name="cancel"]').onclick = () => {
@@ -176,26 +230,34 @@ img[class*="emojiImage-"] {
     }
 
     // Platform-dependent functions
-    var reload;
+    var applyCss; // is called by configure()
     var loadSettingsFromStorage; // async
     var saveSettingsToStorage; // async
+    var shouldAddSettingsMenu;
 
     if (typeof BdApi === 'function') { // BetterDiscord plugin
         const pluginName = 'ResizableEmojis';
 
-        const start = () => BdApi.injectCSS(pluginName, css);
-        const stop = () => BdApi.clearCSS(pluginName);
+        const start = async () => {
+            await loadSettingsFromStorage();
+            configure();
+            // BD's observer does not observe attribute changes, which we need, so we must make our own.
+            mutationObserver.observe(document.body, { attributes: true, attributesFilter: ['src'], childList: true, subtree: true });
+        };
+        const stop = () => {
+            BdApi.clearCSS(pluginName);
+            mutationObserver.disconnect();
+        };
 
         module.exports = () => ({
             start: start,
             stop: stop,
-            observer: processMutation,
             getSettingsPanel: createSettingsPanel
         });
 
-        reload = () => {
-            stop();
-            start();
+        applyCss = () => {
+            BdApi.clearCSS(pluginName);
+            BdApi.injectCSS(pluginName, css);
         };
 
         loadSettingsFromStorage = async () => {
@@ -213,59 +275,11 @@ img[class*="emojiImage-"] {
                 return settings;
             }
         };
+
+        shouldAddSettingsMenu = false;
     } else { // userscript
-        const addSettingsMenu = async (element) => {
-            // Only act on the settings menu.
-            let sideBar = element.querySelector('*[class*="side-"]');
-            if (sideBar === null) return;
-            // Find the last menu item in the App Settings section.
-            let appSettingsHeader = Array.from(sideBar.querySelectorAll('*[class*="header-"]')).find(e => e.textContent === 'App Settings');
-            let finalItem = appSettingsHeader.nextElementSibling;
-            while (hasClassPrefix(finalItem.nextElementSibling, 'item-')) {
-                finalItem = finalItem.nextElementSibling;
-            }
-            // Add a new menu item at the end.
-            let newItem = finalItem.cloneNode();
-            newItem.textContent = 'Resizable Emojis';
-            finalItem.after(newItem);
-
-            newItem.onclick = () => {
-                let dialog = document.body.appendChild(createSettingsPanel());
-                dialog.style.display = 'block';
-                dialog.style.position = 'fixed';
-                dialog.style.zIndex = '1000';
-                dialog.style.left = '0';
-                dialog.style.top = '0';
-                dialog.style.width = '100%';
-                dialog.style.height = '100%';
-                dialog.style.overflow = 'auto';
-                dialog.style.backgroundColor = 'rgba(0,0,0,0.4)';
-
-                dialog.querySelector('button[name="save"]').addEventListener('click',
-                    () => {
-                        dialog.remove();
-                    });
-                dialog.querySelector('button[name="cancel"]').addEventListener('click',
-                    () => {
-                        dialog.remove();
-                    });
-            };
-        };
-
-        const mutationObserverOnChatContent = new MutationObserver(async mutations => {
-            for (const mutation of mutations) {
-                processMutation(mutation);
-
-                for (const node of mutation.addedNodes) {
-                    if (node.nodeType !== Node.ELEMENT_NODE) continue;
-                    await addSettingsMenu(node);
-                }
-            }
-        });
-        mutationObserverOnChatContent.observe(document.body, { childList: true, subtree: true });
-
         var cssElement;
-        var add_style = () => {
+        var addStyle = () => {
             cssElement = document.createElement('style');
             cssElement.setAttribute('type', 'text/css');
 
@@ -278,9 +292,9 @@ img[class*="emojiImage-"] {
             document.head.appendChild(cssElement);
         };
 
-        reload = () => {
+        applyCss = () => {
             if (typeof cssElement !== 'undefined') cssElement.remove();
-            add_style();
+            addStyle();
         };
 
         loadSettingsFromStorage = async () => {
@@ -296,8 +310,11 @@ img[class*="emojiImage-"] {
                 return jobj;
             } catch (e) { }
         };
-    }
 
-    await loadSettingsFromStorage();
-    configure();
+        shouldAddSettingsMenu = true;
+
+        await loadSettingsFromStorage();
+        configure();
+        mutationObserver.observe(document.body, { attributes: true, attributesFilter: ['src'], childList: true, subtree: true });
+    }
 })();
